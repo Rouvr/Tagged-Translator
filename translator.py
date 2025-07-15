@@ -1,26 +1,63 @@
 import tkinter as tk
-from tkinter import scrolledtext, ttk # Import ttk for Combobox
+from tkinter import scrolledtext, ttk, messagebox # Import ttk for Combobox
 import typing
 import re
 import deepl
-import concurrent.futures # For asynchronous execution
 
 DEEPL_PROHIBIT_TRANSLATION = False
 
-class SimpleTextApp:
+class RuvysTaggedTranslator:
+    
+    ColourScheme = {
+        "background": "#f0f0f0",
+        "foreground": "#333333",
+        "font": ("Inter", 12),
+        "button_bg": "#0275d8",
+        "button_fg": "white",
+        "button_active_bg": "#025aa5",
+        "footer_bg": "#333333",
+        
+        # Action buttons colors
+        "action_green": "#5cb85c",
+        "action_active_green": "#4cae4c",
+        "action_yellow": "#d39f04",
+        "action_active_yellow": "#ec971f",
+        "action_red": "#d9534f",
+        "action_active_red": "#c9302c",
+        "action_blue": "#0275d8",
+        "action_active_blue": "#025aa5",
+
+        # Footer info text colors
+        "msg_fail": "#d9534f",  
+        "msg_pass": "#5cb85c",  
+        "msg_unknown": "#ffc107",  
+        "msg_default": "#ffffff",  
+        "msg_working": "#0275d8", 
+    }
+
+    LEFT_HELPTEXT = "Paste text for translation here.\n\nExample:\n<div class='container'>\n  <p>Hello <b>world</b> from Prague!</p>\n  <span class='highlight'>Please translate this text.</span>\n</div>\n\nAnother paragraph here."
+    RIGHT_HELPTEXT = "Here you can check if the <> tags in both texts match fully by pressing the 'Check Tags' button.\n\nYou will also see the translated text with original tags preserved.\n\nIf you want to see only the <> tags, use the 'Filter <> tags' button.\n\nTo see only the plaintext, use the 'Filter plaintext' button.\n<Example tag>"
+
     def __init__(self, master):
-        # Initialize the translator. It will attempt to read the API key from 'api.key' file.
-        # If the file is not found, it will raise a ValueError.
+        self.DEBUG_MODE = False
+        
+        # Initialize the translator. It will attempt to read the API key from 'api.key' file
         try:
             self.translator = DeepLTranslator()
         except ValueError as e:
-            # Handle the case where the API key file is missing.
-            # For this app, we'll just print an error and disable translation features.
-            print(f"Translator initialization error: {e}")
-            self.translator = None # Set translator to None if initialization fails
+            self.translator = None # Let user to provide API key later
 
         self.master = master
         master.title("<> Tag Comparator & Translator")
+
+        self.history = []
+        self.history_index = -1
+
+        self.master.bind_all("<Control-z>", lambda event: self.text_undo())
+        self.master.bind_all("<Control-y>", lambda event: self.text_redo())
+        self.master.bind("<Configure>", self._on_window_resize)
+
+        # --- AI assisted UI ---
 
         # Configure grid weights for responsive layout
         master.grid_rowconfigure(0, weight=1)
@@ -31,34 +68,36 @@ class SimpleTextApp:
         self.text_box_top = scrolledtext.ScrolledText(
             master,
             wrap=tk.WORD,
-            bg="#f0f0f0",
-            fg="#333333",
-            font=("Inter", 12),
+            bg=self.ColourScheme["background"],
+            fg=self.ColourScheme["foreground"],
+            font=self.ColourScheme["font"],
             relief=tk.FLAT,
             bd=2,
             padx=10,
             pady=10
         )
         self.text_box_top.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-        self.text_box_top.insert(tk.END, "This is the left text box.\n\nExample:\n<div class='container'>\n  <p>Hello <b>world</b> from Prague!</p>\n  <span class='highlight'>Please translate this text.</span>\n</div>\n\nAnother paragraph here.")
+        self.text_box_top.insert(tk.END, self.LEFT_HELPTEXT)
 
         # --- Right Text Box ---
         self.text_box_bottom = scrolledtext.ScrolledText(
             master,
             wrap=tk.WORD,
-            bg="#f8f8f8",
-            fg="#333333",
-            font=("Inter", 12),
+            bg=self.ColourScheme["background"],
+            fg=self.ColourScheme["foreground"],
+            font=self.ColourScheme["font"],
             relief=tk.FLAT,
             bd=2,
             padx=10,
             pady=10
         )
         self.text_box_bottom.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
-        self.text_box_bottom.insert(tk.END, "This is the right text box. It also expands vertically and horizontally.\n\nTranslated text with original tags will appear here.")
+        self.text_box_bottom.insert(tk.END, self.RIGHT_HELPTEXT)
+
+        self.history.append([self.LEFT_HELPTEXT, self.RIGHT_HELPTEXT]) # Add initial state to history
 
         # --- Footer Frame ---
-        self.footer_frame = tk.Frame(master, bg="#333333", height=50)
+        self.footer_frame = tk.Frame(master, bg=self.ColourScheme["footer_bg"], height=50)
         self.footer_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
         self.footer_frame.grid_propagate(False)
 
@@ -77,12 +116,12 @@ class SimpleTextApp:
             self.footer_frame,
             text="Check Tags",
             command=self.check_texts_equality,
-            bg="#5cb85c",
+            bg=self.ColourScheme["action_green"],
             fg="white",
             font=("Inter", 10, "bold"),
             relief=tk.RAISED,
             bd=2,
-            activebackground="#4cae4c",
+            activebackground=self.ColourScheme["action_active_green"],
             padx=10, pady=5,
             cursor="hand2"
         )
@@ -90,51 +129,69 @@ class SimpleTextApp:
 
         self.button_convert = tk.Button(
             self.footer_frame,
-            text="Convert to Tags",
-            command=self.convert_texts,
-            bg="#f0ad4e",
+            text="Filter <> tags",
+            command=self.convert_texts_tags,
+            bg=self.ColourScheme["action_yellow"],
             fg="white",
             font=("Inter", 10, "bold"),
             relief=tk.RAISED,
             bd=2,
-            activebackground="#ec971f",
+            activebackground=self.ColourScheme["action_active_yellow"],
             padx=10, pady=5,
             cursor="hand2"
         )
         self.button_convert.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-
-        self.button_debug = tk.Button(
+        
+        self.button_convert = tk.Button(
             self.footer_frame,
-            text="Debug Tags",
-            command=self.debug_texts,
-            bg="#d9534f",
+            text="Filter plaintext",
+            command=self.convert_texts_plaintext,
+            bg=self.ColourScheme["action_yellow"],
             fg="white",
             font=("Inter", 10, "bold"),
             relief=tk.RAISED,
             bd=2,
-            activebackground="#c9302c",
+            activebackground=self.ColourScheme["action_active_yellow"],
             padx=10, pady=5,
             cursor="hand2"
         )
-        self.button_debug.grid(row=0, column=2, padx=5, pady=5, sticky="ew")
+        self.button_convert.grid(row=0, column=2, padx=5, pady=5, sticky="ew")
+
+
 
         # --- Translate Button (now fully functional, no "dummy" label) ---
         self.button_translate = tk.Button( # Renamed from button_translate_dummy
             self.footer_frame,
             text="Translate",
             command=self.translate_content,
-            bg="#0275d8",
+            bg=self.ColourScheme["action_blue"],
             fg="white",
             font=("Inter", 10, "bold"),
             relief=tk.RAISED,
             bd=2,
-            activebackground="#025aa5",
+            activebackground=self.ColourScheme["action_active_blue"],
             padx=10, pady=5,
             cursor="hand2",
-            state=tk.NORMAL if self.translator else tk.DISABLED # Disable if no translator
+            state = tk.NORMAL # Now prompt user for API key if translator is not available
         )
         self.button_translate.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
 
+        # --- Debug Button ---
+        if self.DEBUG_MODE:
+            self.button_debug = tk.Button(
+                self.footer_frame,
+                text="Debug Tags",
+                command=self.debug_texts,
+                bg=self.ColourScheme["action_red"],
+                fg="white",
+                font=("Inter", 10, "bold"),
+                relief=tk.RAISED,
+                bd=2,
+                activebackground=self.ColourScheme["action_active_red"],
+                padx=10, pady=5,
+                cursor="hand2"
+            )
+            self.button_debug.grid(row=0, column=4, padx=5, pady=5, sticky="ew")
 
         # --- Language Selector ---
         self.target_lang_var = tk.StringVar(master)
@@ -163,9 +220,9 @@ class SimpleTextApp:
         self.language_status_label = tk.Label(
             self.footer_frame,
             text="Lang: N/A", # Initial text
-            bg="#333333", # Same as footer background
-            fg="#ffffff", # White text
-            font=("Inter", 10, "bold"),
+            bg=self.ColourScheme["footer_bg"], # Same as footer background
+            fg=self.ColourScheme["foreground"], # White text
+            font=self.ColourScheme["font"],
             anchor="w" # Align text to the left
         )
         self.language_status_label.grid(row=0, column=5, padx=10, pady=5, sticky="ew")
@@ -174,33 +231,82 @@ class SimpleTextApp:
         self.status_label = tk.Label(
             self.footer_frame,
             text="Ready", # Initial status text
-            bg="#333333", # Same as footer background
-            fg="#ffffff", # White text
-            font=("Inter", 10, "bold"),
+            bg=self.ColourScheme["footer_bg"], # Same as footer background
+            fg=self.ColourScheme["foreground"], # White text
+            font=self.ColourScheme["font"],
             anchor="e" # Align text to the right
         )
         self.status_label.grid(row=0, column=6, padx=10, pady=5, sticky="ew") # Adjusted column for status
+        
+        self.button_undo = tk.Button(
+            self.footer_frame,
+            text="↶",  # Undo icon (curved arrow left)
+            command=self.text_undo,
+            font=("Segoe UI", 12),
+            width=2,
+            bg=self.ColourScheme["footer_bg"],
+            fg="white",
+            relief=tk.FLAT,
+            cursor="hand2"
+        )
+        self.button_undo.grid(row=0, column=7, padx=(2, 0), pady=5, sticky="e")
+
+        self.button_redo = tk.Button(
+            self.footer_frame,
+            text="↷",  # Redo icon (curved arrow right)
+            command=self.text_redo,
+            font=("Segoe UI", 12),
+            width=2,
+            bg=self.ColourScheme["footer_bg"],
+            fg="white",
+            relief=tk.FLAT,
+            cursor="hand2"
+        )
+        self.button_redo.grid(row=0, column=8, padx=(0, 10), pady=5, sticky="e")
+
+        for i in range(6):
+            self.footer_frame.grid_columnconfigure(i, weight=0)  # Fixed width buttons
+        self.footer_frame.grid_columnconfigure(6, weight=1)  # Expanding status label
+        self.footer_frame.grid_columnconfigure(7, weight=0)  # Undo button
+        self.footer_frame.grid_columnconfigure(8, weight=0)  # Redo button
+
+        # Adjust undo and redo button widths (already small), but can enforce via .grid()
+        self.button_undo.grid(row=0, column=7, padx=(2, 0), pady=5)
+        self.button_redo.grid(row=0, column=8, padx=(0, 10), pady=5)
 
         # Initial update for the language status
         self.update_language_status()
 
-        # Thread pool for asynchronous operations
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-
+    def _on_window_resize(self, event):
+        min_width = 800
+        
+        if event.widget != self.master:
+            return
+        
+        width = event.width
+        if width < min_width:
+            for i in range(6):
+                self.footer_frame.grid_columnconfigure(i, weight=1)
+        elif width >= 400:
+            for i in range(6):
+                self.footer_frame.grid_columnconfigure(i, weight=0)
+        else:
+            print("Unexpected width:", width)
+            
 
     def update_status(self, message):
         """Updates the text in the general status indicator and sets its color."""
         self.status_label.config(text=message)
         if "PASS" in message:
-            self.status_label.config(fg="#5cb85c") # Green for pass
+            self.status_label.config(fg=self.ColourScheme["msg_pass"])
         elif "FAIL" in message:
-            self.status_label.config(fg="#d9534f") # Red for fail
+            self.status_label.config(fg=self.ColourScheme["msg_fail"])
         elif "UNKNOWN" in message:
-            self.status_label.config(fg="#ffc107") # Yellow for unknown
+            self.status_label.config(fg=self.ColourScheme["msg_unknown"])
         elif "Translating" in message or "Processing" in message:
-            self.status_label.config(fg="#0275d8") # Blue for translating/processing
+            self.status_label.config(fg=self.ColourScheme["msg_working"])
         else:
-            self.status_label.config(fg="#ffffff") # White for default
+            self.status_label.config(fg=self.ColourScheme["msg_default"]) 
 
     def update_language_status(self):
         """Updates the text in the language status indicator."""
@@ -226,7 +332,7 @@ class SimpleTextApp:
         else:
             self.update_status("FAIL: Tags do NOT match")
 
-    def convert_texts(self):
+    def convert_texts_tags(self):
         """
         Retrieves text from both text boxes, converts them by removing plaintext,
         and replaces the content of the text boxes with the converted results.
@@ -238,13 +344,85 @@ class SimpleTextApp:
         converted_top = remove_plaintext_except_newlines(text_top)
         converted_bottom = remove_plaintext_except_newlines(text_bottom)
 
-        self.text_box_top.delete("1.0", tk.END)
-        self.text_box_bottom.delete("1.0", tk.END)
-
-        self.text_box_top.insert(tk.END, converted_top)
-        self.text_box_bottom.insert(tk.END, converted_bottom)
+        self.text_update("both", [converted_top, converted_bottom])
 
         self.update_status("UNKNOWN: Converted to tags")
+    
+    def text_paste_from_history(self, index):
+        state = self.history[index] if 0 <= index < len(self.history) else ["History index out of range, you found a bug", "History index out of range, you found a bug"]
+        self.text_box_top.delete("1.0", tk.END)
+        self.text_box_bottom.delete("1.0", tk.END)
+        self.text_box_top.insert(tk.END, state[0])
+        self.text_box_bottom.insert(tk.END, state[1])
+    
+    def text_undo(self):
+        
+        # At the end, insert current state into history
+        if self.history_index == -1:
+            current_state = [self.text_box_top.get("1.0", tk.END), self.text_box_bottom.get("1.0", tk.END)]
+            self.history.append(current_state) 
+            self.history_index = len(self.history) 
+        
+        if self.history_index > 0:
+            self.history_index -= 1
+            self.text_paste_from_history(self.history_index)
+            self.update_status(f"History: {self.history_index + 1}/{len(self.history)}")
+    
+    def text_redo(self):
+        if self.history_index == -1:
+            self.update_status("No history to redo.")
+            return
+        
+        if self.history_index < len(self.history) - 1:
+            self.history_index += 1
+            self.text_paste_from_history(self.history_index)
+            self.update_status(f"History: {self.history_index + 1}/{len(self.history)}")
+
+    def text_update(self, textbox_id, text : str | typing.List[str]):
+        if isinstance(text, list) and textbox_id not in ["both"]:
+            raise ValueError(f"Unsupported type list[str] for textbox_id '{textbox_id}'. Use a single string instead.")
+
+        current_state = [self.text_box_top.get("1.0", tk.END), self.text_box_bottom.get("1.0", tk.END)]
+        
+        # delete all history after current index, counting up from 0
+        if self.history_index != -1: 
+            self.history = self.history[:self.history_index + 1]
+
+        #ignore type errors, caught by the exception above
+        
+        if textbox_id == "top":
+            self.text_box_top.delete("1.0", tk.END)
+            self.text_box_top.insert(tk.END, text) # type: ignore
+            current_state[0] = text # type: ignore
+        elif textbox_id == "bottom":
+            self.text_box_bottom.delete("1.0", tk.END)
+            self.text_box_bottom.insert(tk.END, text) # type: ignore
+            current_state[1] = text # type: ignore
+        elif textbox_id == "both":
+            self.text_box_top.delete("1.0", tk.END)
+            self.text_box_bottom.delete("1.0", tk.END)
+            self.text_box_top.insert(tk.END, text[0])
+            self.text_box_bottom.insert(tk.END, text[1])
+            current_state = [text[0], text[1]]
+
+        self.history.append(current_state)
+        self.history_index = len(self.history) - 1
+        
+    def convert_texts_plaintext(self):
+        """
+        Retrieves text from both text boxes, converts them by removing HTML tags,
+        and replaces the content of the text boxes with the converted results.
+        Updates status to UNKNOWN (yellow).
+        """
+        text_top = self.text_box_top.get("1.0", tk.END)
+        text_bottom = self.text_box_bottom.get("1.0", tk.END)
+
+        converted_top = re.sub(r'<[^>]+>', '', text_top).strip()
+        converted_bottom = re.sub(r'<[^>]+>', '', text_bottom).strip()
+
+        self.text_update("both", [converted_top, converted_bottom])
+
+        self.update_status("UNKNOWN: Converted to plaintext")
 
     def debug_texts(self):
         """
@@ -261,11 +439,7 @@ class SimpleTextApp:
         formatted_top = "\n".join([f'"{tag}"' for tag in extracted_tags_top])
         formatted_bottom = "\n".join([f'"{tag}"' for tag in extracted_tags_bottom])
 
-        self.text_box_top.delete("1.0", tk.END)
-        self.text_box_bottom.delete("1.0", tk.END)
-
-        self.text_box_top.insert(tk.END, formatted_top)
-        self.text_box_bottom.insert(tk.END, formatted_bottom)
+        self.text_update("both", [formatted_top, formatted_bottom])
 
         self.update_status("UNKNOWN: Debugged tags")
         
@@ -273,7 +447,7 @@ class SimpleTextApp:
 
     def translate_content(self):
         if not self.translator:
-            self.update_status("FAIL: Translator not initialized (API key missing?)")
+            self.show_api_key_prompt()
             return
 
         source_text = self.text_box_top.get("1.0", tk.END).strip()
@@ -290,8 +464,7 @@ class SimpleTextApp:
 
         if not plaintext_segments:
             self.update_status("No plaintext found to translate.")
-            self.text_box_bottom.delete("1.0", tk.END)
-            self.text_box_bottom.insert(tk.END, source_text)
+            self.text_update("bottom", source_text)
             self.button_translate.config(state=tk.NORMAL)
             self.lang_selector.config(state="readonly")
             return
@@ -308,8 +481,7 @@ class SimpleTextApp:
             
             final_translated_text = reassemble_text_with_translations(text_parts, translated_plaintexts)
 
-            self.text_box_bottom.delete("1.0", tk.END)
-            self.text_box_bottom.insert(tk.END, final_translated_text)
+            self.text_update("bottom", final_translated_text)
             self.update_status("PASS: Translation complete")
         except Exception as e:
             self.update_status(f"FAIL: Translation error - {e}")
@@ -325,7 +497,7 @@ class SimpleTextApp:
         """
         if self.translator:
             selected_desc = self.target_lang_var.get()
-            # Extract the language code from the description (e.g., "EN-US - English (American)")
+            # Extract the language code from the description (e.g., "EN-US - English (American)") # -- Eh, it works...
             selected_code = selected_desc.split(" - ")[0]
             if self.translator.set_target_language(selected_code):
                 self.update_status(f"Language set to: {selected_code}")
@@ -334,6 +506,51 @@ class SimpleTextApp:
                 self.update_status(f"FAIL: Could not set language to {selected_code}")
         else:
             self.update_status("FAIL: Translator not initialized.")
+            
+    def show_api_key_prompt(self):
+        popup = tk.Toplevel(self.master)
+        popup.title("Enter DeepL API Key")
+        popup.geometry("400x150")
+        popup.grab_set()
+
+        label = tk.Label(popup, text="Please provide a valid DeepL API key:")
+        label.pack(pady=(10, 5))
+
+        api_entry = tk.Entry(popup, width=40, show='*')
+        api_entry.pack(pady=5)
+
+        def select_file():
+            from tkinter import filedialog
+            file_path = filedialog.askopenfilename(filetypes=[("All files", "*.*")])
+            if file_path:
+                try:
+                    with open(file_path, 'r') as file:
+                        content = file.read().strip()
+                        api_entry.delete(0, tk.END)
+                        api_entry.insert(0, content)
+                except Exception as e:
+                    messagebox.showerror("File Error", f"Failed to read file: {e}")
+
+        def submit_key():
+            key = api_entry.get().strip()
+            if key:
+                try:
+                    self.translator = DeepLTranslator(api_key=key)
+                    self.button_translate.config(state=tk.NORMAL)
+                    self.lang_selector.config(state="readonly")
+                    self.target_lang_var.set(self.translator.current_language())
+                    self.lang_selector.config(values=self.translator.available_languages_desc())
+                    self.update_language_status()
+                    popup.destroy()
+                except Exception as e:
+                    messagebox.showerror("Translator Initialization Failed", str(e))
+
+        btn_frame = tk.Frame(popup)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="Select File", command=select_file).grid(row=0, column=0, padx=5)
+        tk.Button(btn_frame, text="Submit", command=submit_key).grid(row=0, column=1, padx=5)
+
 
 
 def extract_html_tags(html_snippet: str) -> list[str]:
@@ -373,7 +590,7 @@ def split_html_and_plaintext(text: str) -> typing.List[typing.Tuple[str, str]]:
     # re.DOTALL ensures that '.' matches newlines as well, allowing plaintext to span lines.
     pattern = re.compile(r'(<[^>]+>)|([^<]+)', re.DOTALL)
     
-    matches = pattern.finditer(text)
+
     for match in pattern.finditer(text):
         if match.group(1):  # It's an HTML tag
             parts.append(('tag', match.group(1)))
@@ -402,6 +619,8 @@ def reassemble_text_with_translations(
                 print(f"Warning: Missing translation for plaintext segment: '{content}'. Using original.")
                 reassembled_text.append(content)
     return "".join(reassembled_text)
+
+
 
 class DeepLTranslator:
     available_langs_desc = [
@@ -433,10 +652,12 @@ class DeepLTranslator:
                 with open("api.key", "r") as file:
                     self.api_key = file.read().strip()
             except FileNotFoundError:
-                raise ValueError("API key not found. Please provide a valid API key or create an 'api.key' file.")
+                raise ValueError("API key file 'api.key' not found. Please provide a valid DeepL API key.")
 
         self.translator = deepl.Translator(self.api_key)
         self.target_lang = "EN-US" # Default target language
+        
+    
 
     def current_language(self) -> str:
         """Returns the current target language for translation."""
@@ -525,11 +746,11 @@ class DeepLTranslator:
         except Exception as e:
             raise Exception(f"An unexpected error occurred during batch translation: {e}")
 
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.title("<> Tag Comparator & Translator")
 
-# Create the main window instance
-root = tk.Tk()
+    root.geometry("1000x600")
 
-# Set a minimum size for better initial appearance
-root.geometry("1000x600") # Increased default width to accommodate new buttons
-app = SimpleTextApp(root)
-root.mainloop()
+    app = RuvysTaggedTranslator(root)
+    root.mainloop()
