@@ -438,8 +438,11 @@ class RuvysTaggedTranslator:
         text_top = self.text_box_top.get("1.0", tk.END)
         text_bottom = self.text_box_bottom.get("1.0", tk.END)
 
-        converted_top = re.sub(r'<[^>]+>', '', text_top).strip()
-        converted_bottom = re.sub(r'<[^>]+>', '', text_bottom).strip()
+        pattern = r'(?:<[^>]+>|\{[^}]+\})'
+
+
+        converted_top =     re.sub(pattern, '', text_top).strip()
+        converted_bottom =  re.sub(pattern, '', text_bottom).strip()
 
         self.text_update("both", [converted_top, converted_bottom])
 
@@ -693,8 +696,9 @@ def extract_html_tags(html_snippet: str) -> list[str]:
     Extracts all HTML tags (e.g., <div>, </div>, <p class="article-perex">)
     from a given HTML snippet, including any attributes.
     """
-    pattern = r'<[^>]+>'
+    # pattern = r'<[^>]+>'
     pattern = r'(?:<[^>]+>|\{[^}]+\})'
+    
     tags = re.findall(pattern, html_snippet)
     return tags
 
@@ -703,8 +707,9 @@ def remove_plaintext_except_newlines(html_snippet: str) -> str:
     Removes all plaintext content from an HTML snippet, preserving only
     HTML tags (including attributes) and newline characters.
     """
-    pattern = r'(<[^>]+>)|(\n)|([^<>\n]+)'
+    # pattern = r'(<[^>]+>)|(\n)|([^<>\n]+)'
     pattern = r'(<[^>]+>|\{[^}]+\})|(\n)|([^<>{}\n]+)'
+    
 
 
     def replacer(match):
@@ -726,7 +731,7 @@ def split_html_and_plaintext(text: str) -> typing.List[typing.Tuple[str, str]]:
     parts = []
     # Regex to capture either an HTML tag or any text that is not part of a tag
     # re.DOTALL ensures that '.' matches newlines as well, allowing plaintext to span lines.
-    pattern = re.compile(r'(<[^>]+>)|([^<]+)', re.DOTALL)
+    # pattern = re.compile(r'(<[^>]+>)|([^<]+)', re.DOTALL)
     pattern = re.compile(r'(<[^>]+>|\{[^}]+\})|([^<>{}]+)', re.DOTALL)
 
 
