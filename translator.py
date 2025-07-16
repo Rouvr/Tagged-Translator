@@ -3,6 +3,7 @@ from tkinter import scrolledtext, ttk, messagebox # Import ttk for Combobox
 import typing
 import re
 import deepl
+import csv
 
 DEEPL_PROHIBIT_TRANSLATION = False
 
@@ -264,11 +265,31 @@ class RuvysTaggedTranslator:
         )
         self.button_redo.grid(row=0, column=8, padx=(0, 10), pady=5, sticky="e")
 
+        self.button_csv = tk.Button(
+            self.footer_frame,
+            text="CSV",
+            command=self.show_csv_popup,
+            bg=self.ColourScheme["action_blue"],
+            fg="white",
+            font=("Inter", 10, "bold"),
+            relief=tk.RAISED,
+            bd=2,
+            activebackground=self.ColourScheme["action_active_blue"],
+            padx=10, pady=5,
+            cursor="hand2"
+        )
+        self.button_csv.grid(row=0, column=9, padx=5, pady=5, sticky="ew")
+        #tmp disable CSV button
+        self.button_csv.config(state=tk.DISABLED)
+        
         for i in range(6):
             self.footer_frame.grid_columnconfigure(i, weight=0)  # Fixed width buttons
         self.footer_frame.grid_columnconfigure(6, weight=1)  # Expanding status label
         self.footer_frame.grid_columnconfigure(7, weight=0)  # Undo button
         self.footer_frame.grid_columnconfigure(8, weight=0)  # Redo button
+        self.footer_frame.grid_columnconfigure(9, weight=0)
+
+        
 
         # Adjust undo and redo button widths (already small), but can enforce via .grid()
         self.button_undo.grid(row=0, column=7, padx=(2, 0), pady=5)
@@ -443,7 +464,26 @@ class RuvysTaggedTranslator:
 
         self.update_status("UNKNOWN: Debugged tags")
         
+    def translate_texts_headless(self, source_text: str, target_lang: str):
+        if not self.translator:
+            return ""
         
+        text_parts = split_html_and_plaintext(source_text)
+        plaintext_segments = [content for part_type, content in text_parts if part_type == 'plaintext']
+
+        try:
+            translated_plaintexts = []
+            if not DEEPL_PROHIBIT_TRANSLATION:
+                translated_plaintexts = self.translator.translate_batch(plaintext_segments, target_lang)
+            else:
+                translated_plaintexts = plaintext_segments
+            
+            final_translated_text = reassemble_text_with_translations(text_parts, translated_plaintexts)
+
+        except Exception as e:
+            print(f"Translation error: {e}")
+
+        return final_translated_text
 
     def translate_content(self):
         if not self.translator:
@@ -506,7 +546,58 @@ class RuvysTaggedTranslator:
                 self.update_status(f"FAIL: Could not set language to {selected_code}")
         else:
             self.update_status("FAIL: Translator not initialized.")
-            
+    def show_csv_popup(self):
+        popup = tk.Toplevel(self.master)
+        popup.title("CSV Translation Settings")
+        popup.geometry("500x300")
+
+        def choose_file(entry):
+            from tkinter import filedialog
+            file_path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])
+            if file_path:
+                entry.delete(0, tk.END)
+                entry.insert(0, file_path)
+
+        def submit():
+            input_path = input_entry.get().strip()
+            output_path = output_entry.get().strip()
+            try:
+                header_row = int(header_entry.get().strip())
+                source_col = int(source_entry.get().strip())
+                ignored = [int(x.strip()) for x in ignored_entry.get().split(",") if x.strip().isdigit()]
+                self.csv_translate(input_path, output_path, header_row, source_col, ignored)
+                popup.destroy()
+            except Exception as e:
+                messagebox.showerror("CSV Submit Error", str(e))
+
+        tk.Label(popup, text="Input File (.csv):").pack(anchor="w", padx=10, pady=(10,0))
+        input_frame = tk.Frame(popup)
+        input_frame.pack(fill="x", padx=10)
+        input_entry = tk.Entry(input_frame, width=40)
+        input_entry.pack(side="left", expand=True, fill="x")
+        tk.Button(input_frame, text="Choose File", command=lambda: choose_file(input_entry)).pack(side="right")
+
+        tk.Label(popup, text="Output File (.csv):").pack(anchor="w", padx=10, pady=(10,0))
+        output_frame = tk.Frame(popup)
+        output_frame.pack(fill="x", padx=10)
+        output_entry = tk.Entry(output_frame, width=40)
+        output_entry.pack(side="left", expand=True, fill="x")
+        tk.Button(output_frame, text="Choose File", command=lambda: choose_file(output_entry)).pack(side="right")
+
+        tk.Label(popup, text="Header Row (number):").pack(anchor="w", padx=10, pady=(10,0))
+        header_entry = tk.Entry(popup)
+        header_entry.pack(fill="x", padx=10)
+
+        tk.Label(popup, text="Source Column (number):").pack(anchor="w", padx=10, pady=(10,0))
+        source_entry = tk.Entry(popup)
+        source_entry.pack(fill="x", padx=10)
+
+        tk.Label(popup, text="Ignored Columns (comma-separated numbers):").pack(anchor="w", padx=10, pady=(10,0))
+        ignored_entry = tk.Entry(popup)
+        ignored_entry.pack(fill="x", padx=10)
+
+        tk.Button(popup, text="Submit", command=submit).pack(pady=15)
+
     def show_api_key_prompt(self):
         popup = tk.Toplevel(self.master)
         popup.title("Enter DeepL API Key")
@@ -551,6 +642,50 @@ class RuvysTaggedTranslator:
         tk.Button(btn_frame, text="Select File", command=select_file).grid(row=0, column=0, padx=5)
         tk.Button(btn_frame, text="Submit", command=submit_key).grid(row=0, column=1, padx=5)
 
+    def csv_translate(self, input_file :str, output_file: str, target_lang_row: int, source_column: int, ignored_columns: typing.List[int]):
+        rows = []
+        try:
+            with open(input_file, 'r', encoding='utf-8') as csvfile:
+                reader = csv.reader(csvfile)
+                rows = list(reader)
+        except Exception as e:
+            print(f"Error reading CSV file: {e}")
+            return False
+
+        source_texts = []
+        for i, row in enumerate(rows):
+            if i == target_lang_row:
+                continue
+            if len(row) > source_column:
+                source_texts.append(row[source_column])
+            else:
+                print(f"Row {rows.index(row)} does not have enough columns. Skipping.")
+
+        target_langs = []
+        for index, lang in enumerate(rows[target_lang_row]):
+            if index not in ignored_columns:
+                target_langs.append(lang.strip())
+            
+        with open(output_file, 'w', encoding='utf-8', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            # Write header
+            header = [rows[target_lang_row][source_column]] + [rows[target_lang_row][i] for i in ignored_columns]
+            writer.writerow(header)
+
+            # Translate each source text and write to the corresponding target columns
+            for source_text in source_texts:
+                translated_texts = []
+                for target_lang in target_langs:
+                    try:
+                        translated_text = self.translate_texts_headless(source_text, target_lang)
+                        translated_texts.append(translated_text)
+                    except Exception as e:
+                        print(f"Error translating text '{source_text}' to {target_lang}: {e}")
+                        translated_texts.append(e)
+            
+                # Write the source text and its translations to the CSV
+                row_to_write = [source_text] + translated_texts
+                writer.writerow(row_to_write)
 
 
 def extract_html_tags(html_snippet: str) -> list[str]:
@@ -559,6 +694,7 @@ def extract_html_tags(html_snippet: str) -> list[str]:
     from a given HTML snippet, including any attributes.
     """
     pattern = r'<[^>]+>'
+    pattern = r'(?:<[^>]+>|\{[^}]+\})'
     tags = re.findall(pattern, html_snippet)
     return tags
 
@@ -568,6 +704,8 @@ def remove_plaintext_except_newlines(html_snippet: str) -> str:
     HTML tags (including attributes) and newline characters.
     """
     pattern = r'(<[^>]+>)|(\n)|([^<>\n]+)'
+    pattern = r'(<[^>]+>|\{[^}]+\})|(\n)|([^<>{}\n]+)'
+
 
     def replacer(match):
         if match.group(1):
@@ -589,7 +727,8 @@ def split_html_and_plaintext(text: str) -> typing.List[typing.Tuple[str, str]]:
     # Regex to capture either an HTML tag or any text that is not part of a tag
     # re.DOTALL ensures that '.' matches newlines as well, allowing plaintext to span lines.
     pattern = re.compile(r'(<[^>]+>)|([^<]+)', re.DOTALL)
-    
+    pattern = re.compile(r'(<[^>]+>|\{[^}]+\})|([^<>{}]+)', re.DOTALL)
+
 
     for match in pattern.finditer(text):
         if match.group(1):  # It's an HTML tag
